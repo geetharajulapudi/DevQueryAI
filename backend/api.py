@@ -10,7 +10,7 @@ Endpoints:
 
 import os
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from groq import Groq
@@ -28,6 +28,8 @@ session = {
     "model": None,
     "repo_path": None,
     "repo_url": None,
+    "status": "idle",
+    "error": None,
 }
 
 
@@ -67,36 +69,31 @@ def status():
     return {
         "loaded": session["index"] is not None,
         "repo_url": session["repo_url"],
+        "status": session["status"],
+        "error": session["error"],
     }
 
 
-@app.post("/ingest")
-def ingest(req: IngestRequest):
-    # Clean up previous session if any
+def run_ingest(repo_url: str):
     if session["repo_path"]:
         cleanup_repo(session["repo_path"])
         session.update({"index": None, "chunks": None, "model": None, "repo_path": None})
-
+    session["status"] = "loading"
+    session["error"] = None
     try:
-        repo_path = clone_repo(req.repo_url)
+        repo_path = clone_repo(repo_url)
         files = read_files(repo_path)
         index, chunks, model = build_index(files)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        session.update({"index": index, "chunks": chunks, "model": model, "repo_path": repo_path, "repo_url": repo_url, "status": "ready"})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        session["status"] = "error"
+        session["error"] = str(e)
 
-    session.update({
-        "index": index,
-        "chunks": chunks,
-        "model": model,
-        "repo_path": repo_path,
-        "repo_url": req.repo_url,
-    })
 
-    return {"message": f"Ingested {len(chunks)} chunks from {req.repo_url}", "repo_url": session["repo_url"]}
+@app.post("/ingest")
+def ingest(req: IngestRequest, background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_ingest, req.repo_url)
+    return {"message": "Ingestion started. Poll /status to check progress."}
 
 
 @app.post("/query")
