@@ -18,7 +18,7 @@ def init_groq() -> Groq:
     """Loads .env and initializes the Groq client. Exits if API key is missing."""
     load_dotenv()
     api_key = os.getenv("GROQ_API_KEY")
-    if not api_key or api_key == "your_groq_api_key_here":
+    if not api_key :
         print("[Error] GROQ_API_KEY not set. Add it to your .env file.")
         print("Get a free key at: https://console.groq.com")
         sys.exit(1)
