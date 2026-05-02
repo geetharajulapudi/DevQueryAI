@@ -8,3 +8,7 @@ frontend/node_modules/
 backend/.env
 .env
 env/
+frontend/node_modules/
+env/
+backend/.env
+.env
