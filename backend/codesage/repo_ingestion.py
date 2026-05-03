@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from git import Repo
 from git.exc import GitCommandError
 
@@ -36,6 +37,12 @@ _GIT_HOST_PATTERNS = [
 
 def normalize_repo_url(url: str) -> str:
     url = url.strip().rstrip("/")
+    # Convert SSH to HTTPS: git@github.com:user/repo → https://github.com/user/repo
+    if url.startswith("git@"):
+        url = url.replace("git@", "https://").replace(":", "/")
+        if url.endswith(".git"):
+            url = url[:-4]
+        return url
     for pattern, _ in _GIT_HOST_PATTERNS:
         match = re.match(pattern, url)
         if match:
@@ -58,14 +65,22 @@ def clone_repo(repo_url: str) -> str:
         print(f"[!] URL normalized: {repo_url} → {clean_url}")
 
     tmp_dir = tempfile.mkdtemp(prefix="codesage_")
-    try:
-        print(f"[+] Cloning {clean_url} ...")
-        Repo.clone_from(clean_url, tmp_dir, depth=1)
-        print(f"[+] Cloned to {tmp_dir}")
-        return tmp_dir
-    except GitCommandError as e:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise RuntimeError(f"Failed to clone repository: {e}") from e
+    # Retry up to 3 times for network issues
+    for attempt in range(1, 4):
+        try:
+            print(f"[+] Cloning {clean_url} (attempt {attempt}/3) ...")
+            Repo.clone_from(
+                clean_url, tmp_dir, depth=1,
+                env={"GIT_HTTP_LOW_SPEED_LIMIT": "1000", "GIT_HTTP_LOW_SPEED_TIME": "60"}
+            )
+            print(f"[+] Cloned to {tmp_dir}")
+            return tmp_dir
+        except GitCommandError as e:
+            print(f"[!] Attempt {attempt} failed: {e}")
+            if attempt == 3:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                raise RuntimeError(f"Failed to clone repository after 3 attempts: {e}") from e
+            time.sleep(3)  # wait before retry
 
 
 def read_files(repo_path: str) -> list[dict]:
