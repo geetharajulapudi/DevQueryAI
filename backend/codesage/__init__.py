@@ -1,1 +1,1 @@
-# CodeSage AI
+# CodeSage AI – Developer Knowledge Assistant

@@ -1,47 +1,28 @@
+"""
+retriever.py
+Searches the FAISS index for relevant code chunks and generates answers via Groq LLM.
+"""
+
 import numpy as np
 import faiss
 from groq import Groq
+from sentence_transformers import SentenceTransformer
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-SYSTEM_PROMPT = """You are CodeSage AI, a code analysis assistant for a specific GitHub repository.
-Answer questions strictly based on the provided code snippets.
-- Reference exact file paths when explaining.
-- Use markdown and code blocks.
-- If the snippets don't have enough info, say so honestly.
+SYSTEM_PROMPT = """You are CodeSage AI, an expert developer assistant.
+
+You are given relevant code snippets retrieved from a GitHub repository.
+Your job is to answer the user's question clearly and helpfully based on that code.
+
+When answering:
+- If the user asks to explain something, give a clear, structured explanation of how it works in THIS repo.
+- If the user asks how to implement a feature, give step-by-step instructions with exact file paths and code examples tailored to this repo's structure.
+- If the user asks where something is, point to the exact file and describe what's happening there.
+- Always reference the actual file paths from the context (e.g. "In `auth/login.py` line ~45, ...").
+- If the context doesn't have enough info, say so honestly and suggest what to look for.
+- Keep answers concise but complete. Use markdown formatting (headers, code blocks).
 """
-
-
-def classify_intent(query: str, groq_client: Groq) -> str:
-    """
-    Returns 'greeting', 'repo', or 'offtopic'.
-    """
-    try:
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Classify the user message into exactly one of these categories:\n"
-                        "- greeting: casual chat, greetings, small talk, thanks\n"
-                        "- repo: questions about a SPECIFIC codebase — asking about how code works, where something is implemented, how to add a feature, explaining architecture, debugging code in a project\n"
-                        "- offtopic: general knowledge questions (what is python, what is jwt, who is someone, explain a concept in general), celebrities, sports, anything not about a specific codebase\n"
-                        "Key rule: 'what is X' or 'explain X' for general concepts = offtopic. Only questions about THIS project's code = repo.\n"
-                        "Reply with only one word: greeting, repo, or offtopic."
-                    ),
-                },
-                {"role": "user", "content": query},
-            ],
-            temperature=0,
-            max_tokens=5,
-        )
-        intent = response.choices[0].message.content.strip().lower()
-        if intent not in {"greeting", "repo", "offtopic"}:
-            return "repo"
-        return intent
-    except Exception:
-        return "repo"
 
 
 def search(query, index, chunks, model, top_k=6):
@@ -58,34 +39,43 @@ def search(query, index, chunks, model, top_k=6):
     return results
 
 
-def generate_answer(query: str, results: list, groq_client: Groq) -> str:
-    intent = classify_intent(query, groq_client)
+def build_context(results):
+    parts = []
+    for i, chunk in enumerate(results, 1):
+        parts.append(
+            f"### Snippet {i} — File: `{chunk['path']}` | Line ~{chunk['start_line']}\n"
+            f"```\n{chunk['content']}\n```"
+        )
+    return "\n\n".join(parts)
 
-    if intent == "greeting":
-        return "Hey! Ask me anything about the indexed repository — features, code, architecture, or how to implement something."
 
-    if intent == "offtopic":
-        return "I can only answer questions about the indexed repository. Try asking about the code, features, or architecture."
-
+def generate_answer(query: str, results: list[dict], groq_client: Groq) -> str:
     if not results:
-        return "No relevant code found in the repository for your query."
+        return "No relevant code found for your query."
 
-    top_results = sorted(results, key=lambda x: x["score"], reverse=True)[:3]
-    context = "\n\n".join(
-        f"### File: `{c['path']}` | Line ~{c['start_line']}\n```\n{c['content']}\n```"
-        for c in top_results
-    )
+    user_message = f"""Here are the most relevant code snippets from the repository:
+
+{build_context(results)}
+
+---
+
+User question: {query}
+
+Please answer based on the code above."""
 
     try:
         response = groq_client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Relevant code:\n\n{context}\n\nQuestion: {query}"},
+                {"role": "user", "content": user_message},
             ],
             temperature=0.3,
             max_tokens=1024,
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"[!] Groq error: {e}"
+        fallback = [f"[!] Groq LLM error: {e}\n", "Falling back to raw snippets:\n"]
+        for chunk in results:
+            fallback.append(f"File: {chunk['path']} | Line ~{chunk['start_line']}\n{chunk['content']}\n")
+        return "\n".join(fallback)
