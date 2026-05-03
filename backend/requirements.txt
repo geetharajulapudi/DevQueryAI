@@ -1,0 +1,9 @@
+sentence-transformers
+faiss-cpu==1.13.0
+gitpython
+numpy
+groq
+python-dotenv
+fastapi
+uvicorn
+python-multipart
